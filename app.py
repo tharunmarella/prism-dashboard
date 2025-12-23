@@ -22,7 +22,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS - Compact metrics + dataframe scrolling
+# Custom CSS - Compact metrics
 st.markdown("""
 <style>
     /* Remove card styling, make metrics compact */
@@ -40,28 +40,13 @@ st.markdown("""
     div[data-testid="column"] {
         padding: 0 0.5rem !important;
     }
+    
     /* Force horizontal scrollbar on dataframes */
     div[data-testid="stDataFrame"] > div {
         overflow-x: auto !important;
     }
     div[data-testid="stDataFrame"] iframe {
         min-width: 100% !important;
-    }
-    /* Make sure scrollbar is always visible */
-    ::-webkit-scrollbar {
-        height: 10px;
-        width: 10px;
-    }
-    ::-webkit-scrollbar-track {
-        background: #f1f1f1;
-        border-radius: 5px;
-    }
-    ::-webkit-scrollbar-thumb {
-        background: #888;
-        border-radius: 5px;
-    }
-    ::-webkit-scrollbar-thumb:hover {
-        background: #555;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -224,7 +209,7 @@ elif page == "🛍️ Products":
     st.metric("Total Results", len(products))
     
     if not products.empty:
-        # Don't use use_container_width=True to enable horizontal scrolling
+        # Don't use use_container_width=True to enable horizontal scrolling for wide tables
         st.dataframe(products, height=600)
         
         # Download button
@@ -376,7 +361,7 @@ elif page == "🏪 Retailers":
     """)
     
     if not retailers.empty:
-        st.dataframe(retailers, height=400)
+        st.dataframe(retailers)
     else:
         st.info("No retailers yet")
 
