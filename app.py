@@ -22,16 +22,23 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS
+# Custom CSS - Compact metrics
 st.markdown("""
 <style>
-    .stMetric {
-        background-color: #f0f2f6;
-        padding: 1rem;
-        border-radius: 0.5rem;
+    /* Remove card styling, make metrics compact */
+    div[data-testid="stMetric"] {
+        background: none !important;
+        padding: 0 !important;
     }
     div[data-testid="stMetricValue"] {
-        font-size: 2rem;
+        font-size: 1.5rem !important;
+    }
+    div[data-testid="stMetricLabel"] {
+        font-size: 0.8rem !important;
+    }
+    /* Compact the metric columns */
+    div[data-testid="column"] {
+        padding: 0 0.5rem !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -91,15 +98,13 @@ if page == "📊 Overview":
     
     counts = get_counts()
     
-    # Metrics row
-    col1, col2, col3, col4 = st.columns(4)
+    # All metrics in one row
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
     col1.metric("Products", f"{counts.get('products', 0):,}")
     col2.metric("Retailers", f"{counts.get('retailers', 0):,}")
-    col3.metric("Discovered URLs", f"{counts.get('discovered_urls', 0):,}")
-    col4.metric("Crawl Jobs", f"{counts.get('crawl_jobs', 0):,}")
-    
-    col5, col6, col7, col8 = st.columns(4)
-    col5.metric("Price Records", f"{counts.get('product_prices', 0):,}")
+    col3.metric("URLs", f"{counts.get('discovered_urls', 0):,}")
+    col4.metric("Jobs", f"{counts.get('crawl_jobs', 0):,}")
+    col5.metric("Prices", f"{counts.get('product_prices', 0):,}")
     col6.metric("Images", f"{counts.get('product_images', 0):,}")
     
     st.divider()
