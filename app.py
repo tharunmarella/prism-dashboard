@@ -157,20 +157,33 @@ elif page == "🛍️ Products":
     with col3:
         limit = st.number_input("Limit", min_value=10, max_value=1000, value=100)
     
-    # Build query
+    # Build query - ALL fields
     query = """
         SELECT 
             p.id,
             p.title,
             p.retailer_sku as sku,
-            p.price,
-            p.currency,
-            p.brand,
-            p.in_stock,
             r.name as retailer,
+            p.brand,
+            p.price,
+            p.original_price,
+            p.currency,
+            p.in_stock,
+            p.stock_level,
+            p.rating,
+            p.review_count,
+            p.categories,
+            p.tags,
+            p.upc,
+            p.gtin,
+            p.mpn,
+            p.description,
             p.url,
+            p.canonical_url,
+            p.is_active,
             p.first_seen_at,
-            p.last_updated_at
+            p.last_updated_at,
+            p.last_crawled_at
         FROM products p
         LEFT JOIN retailers r ON p.retailer_id = r.id
         WHERE 1=1
