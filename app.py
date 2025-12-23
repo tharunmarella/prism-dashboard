@@ -127,6 +127,7 @@ if page == "📊 Overview":
         LIMIT 10
     """)
     if not recent_products.empty:
+        st.caption(f"Fields: {', '.join(recent_products.columns)}")
         st.dataframe(recent_products, use_container_width=True)
     else:
         st.info("No products yet")
@@ -142,6 +143,7 @@ if page == "📊 Overview":
         LIMIT 10
     """)
     if not recent_jobs.empty:
+        st.caption(f"Fields: {', '.join(recent_jobs.columns)}")
         st.dataframe(recent_jobs, use_container_width=True)
     else:
         st.info("No crawl jobs yet")
@@ -209,6 +211,7 @@ elif page == "🛍️ Products":
     st.metric("Total Results", len(products))
     
     if not products.empty:
+        st.caption(f"Fields ({len(products.columns)}): {', '.join(products.columns)}")
         # Don't use use_container_width=True to enable horizontal scrolling for wide tables
         st.dataframe(products, height=600)
         
@@ -327,6 +330,7 @@ elif page == "💰 Price History":
         col2.metric("Avg Price", f"${prices['price'].mean():.2f}")
         col3.metric("Products with Discounts", len(prices[prices['original_price'].notna() & (prices['original_price'] > prices['price'])]))
         
+        st.caption(f"Fields: {', '.join(prices.columns)}")
         st.dataframe(prices, height=500)
         
         # Download button
@@ -361,6 +365,7 @@ elif page == "🏪 Retailers":
     """)
     
     if not retailers.empty:
+        st.caption(f"Fields: {', '.join(retailers.columns)}")
         st.dataframe(retailers)
     else:
         st.info("No retailers yet")
@@ -422,6 +427,7 @@ elif page == "🔗 Discovered URLs":
         col3.metric("Product URLs", f"{int(stats['products'].iloc[0] or 0):,}")
     
     if not urls.empty:
+        st.caption(f"Fields: {', '.join(urls.columns)}")
         st.dataframe(urls, height=500)
     else:
         st.info("No discovered URLs yet")
@@ -463,6 +469,7 @@ elif page == "📋 Crawl Jobs":
         col3.metric("Failed", len(jobs[jobs['status'] == 'failed']))
         col4.metric("Products Found", int(jobs['products_found'].sum()))
         
+        st.caption(f"Fields: {', '.join(jobs.columns)}")
         st.dataframe(jobs, height=500)
     else:
         st.info("No crawl jobs yet")
