@@ -8,8 +8,7 @@ Run:
 """
 
 import os
-import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import pandas as pd
 import streamlit as st
@@ -23,15 +22,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better styling
+# Custom CSS
 st.markdown("""
 <style>
-    .metric-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 1rem;
-        border-radius: 0.5rem;
-        color: white;
-    }
     .stMetric {
         background-color: #f0f2f6;
         padding: 1rem;
@@ -132,7 +125,7 @@ if page == "📊 Overview":
                products_found, urls_discovered,
                started_at, completed_at
         FROM crawl_jobs
-        ORDER BY started_at DESC
+        ORDER BY created_at DESC
         LIMIT 10
     """)
     if not recent_jobs.empty:
@@ -208,13 +201,14 @@ elif page == "🏪 Retailers":
             r.id,
             r.name,
             r.domain,
+            r.platform,
+            r.crawl_enabled,
+            r.last_crawled_at,
             r.created_at,
-            COUNT(DISTINCT p.id) as product_count,
-            COUNT(DISTINCT du.id) as discovered_urls
+            COUNT(DISTINCT p.id) as product_count
         FROM retailers r
         LEFT JOIN products p ON r.id = p.retailer_id
-        LEFT JOIN discovered_urls du ON r.id = du.retailer_id
-        GROUP BY r.id, r.name, r.domain, r.created_at
+        GROUP BY r.id, r.name, r.domain, r.platform, r.crawl_enabled, r.last_crawled_at, r.created_at
         ORDER BY product_count DESC
     """)
     
@@ -241,12 +235,11 @@ elif page == "🔗 Discovered URLs":
         SELECT 
             du.url,
             du.url_type,
+            du.source,
             du.extracted,
-            du.priority,
-            r.name as retailer,
+            du.visited,
             du.discovered_at
         FROM discovered_urls du
-        LEFT JOIN retailers r ON du.retailer_id = r.id
         WHERE 1=1
     """
     
@@ -266,14 +259,14 @@ elif page == "🔗 Discovered URLs":
     stats = run_query("""
         SELECT 
             COUNT(*) as total,
-            SUM(CASE WHEN extracted THEN 1 ELSE 0 END) as extracted,
+            SUM(CASE WHEN extracted THEN 1 ELSE 0 END) as extracted_count,
             SUM(CASE WHEN url_type = 'product' THEN 1 ELSE 0 END) as products
         FROM discovered_urls
     """)
-    if not stats.empty:
-        col1.metric("Total URLs", f"{stats['total'].iloc[0]:,}")
-        col2.metric("Extracted", f"{stats['extracted'].iloc[0]:,}")
-        col3.metric("Product URLs", f"{stats['products'].iloc[0]:,}")
+    if not stats.empty and stats['total'].iloc[0] is not None:
+        col1.metric("Total URLs", f"{int(stats['total'].iloc[0] or 0):,}")
+        col2.metric("Extracted", f"{int(stats['extracted_count'].iloc[0] or 0):,}")
+        col3.metric("Product URLs", f"{int(stats['products'].iloc[0] or 0):,}")
     
     if not urls.empty:
         st.dataframe(urls, use_container_width=True, height=500)
@@ -291,15 +284,18 @@ elif page == "📋 Crawl Jobs":
             job_type,
             status,
             base_url,
-            products_found,
-            categories_found,
             urls_discovered,
+            urls_crawled,
+            products_found,
+            products_updated,
             errors,
+            error_message,
+            created_at,
             started_at,
             completed_at,
             EXTRACT(EPOCH FROM (completed_at - started_at)) as duration_seconds
         FROM crawl_jobs
-        ORDER BY started_at DESC
+        ORDER BY created_at DESC
         LIMIT 100
     """)
     
@@ -309,7 +305,7 @@ elif page == "📋 Crawl Jobs":
         col1.metric("Total Jobs", len(jobs))
         col2.metric("Completed", len(jobs[jobs['status'] == 'completed']))
         col3.metric("Failed", len(jobs[jobs['status'] == 'failed']))
-        col4.metric("Products Found", jobs['products_found'].sum())
+        col4.metric("Products Found", int(jobs['products_found'].sum()))
         
         st.dataframe(jobs, use_container_width=True, height=500)
     else:
@@ -380,4 +376,3 @@ elif page == "🗑️ Clear Data":
 # Footer
 st.sidebar.divider()
 st.sidebar.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
