@@ -89,7 +89,7 @@ def get_counts() -> dict:
 st.sidebar.title("🔮 Prism Dashboard")
 page = st.sidebar.radio(
     "Navigation",
-    ["📊 Overview", "🛍️ Products", "🖼️ Images", "🏪 Retailers", "🔗 Discovered URLs", "📋 Crawl Jobs", "🗑️ Clear Data"]
+    ["📊 Overview", "🛍️ Products", "🖼️ Images", "💰 Price History", "🏪 Retailers", "🔗 Discovered URLs", "📋 Crawl Jobs", "🗑️ Clear Data"]
 )
 
 # Overview Page
@@ -226,11 +226,16 @@ elif page == "🖼️ Images":
     # Fetch images with product info
     images = run_query(f"""
         SELECT 
+            pi.id,
+            pi.product_id,
             pi.source_url,
             pi.stored_url,
+            pi.position,
+            pi.alt_text,
             pi.width,
             pi.height,
-            pi.alt_text,
+            pi.image_hash,
+            pi.created_at,
             p.title as product_title,
             p.url as product_url
         FROM product_images pi
@@ -259,6 +264,69 @@ elif page == "🖼️ Images":
         st.info("No images yet")
 
 
+# Price History Page
+elif page == "💰 Price History":
+    st.title("💰 Price History")
+    
+    # Filters
+    col1, col2 = st.columns(2)
+    with col1:
+        limit = st.number_input("Limit", min_value=10, max_value=1000, value=100, key="price_limit")
+    with col2:
+        # Search by product title
+        search_product = st.text_input("Search product (title)", "")
+    
+    if search_product:
+        prices = run_query(f"""
+            SELECT 
+                pp.product_id,
+                p.title as product_title,
+                pp.price,
+                pp.original_price,
+                pp.currency,
+                pp.in_stock,
+                pp.recorded_at
+            FROM product_prices pp
+            LEFT JOIN products p ON pp.product_id = p.id
+            WHERE LOWER(p.title) LIKE LOWER('%{search_product}%')
+            ORDER BY pp.recorded_at DESC
+            LIMIT {limit}
+        """)
+    else:
+        prices = run_query(f"""
+            SELECT 
+                pp.product_id,
+                p.title as product_title,
+                pp.price,
+                pp.original_price,
+                pp.currency,
+                pp.in_stock,
+                pp.recorded_at
+            FROM product_prices pp
+            LEFT JOIN products p ON pp.product_id = p.id
+            ORDER BY pp.recorded_at DESC
+            LIMIT {limit}
+        """)
+    
+    # Stats
+    col1, col2, col3 = st.columns(3)
+    total_prices = run_query("SELECT COUNT(*) as count FROM product_prices")
+    if not total_prices.empty:
+        col1.metric("Total Price Records", f"{int(total_prices['count'].iloc[0] or 0):,}")
+    
+    if not prices.empty:
+        col2.metric("Avg Price", f"${prices['price'].mean():.2f}")
+        col3.metric("Products with Discounts", len(prices[prices['original_price'].notna() & (prices['original_price'] > prices['price'])]))
+        
+        st.dataframe(prices, use_container_width=True, height=500)
+        
+        # Download button
+        csv = prices.to_csv(index=False)
+        st.download_button("📥 Download CSV", csv, "price_history.csv", "text/csv")
+    else:
+        st.info("No price history yet")
+
+
 # Retailers Page
 elif page == "🏪 Retailers":
     st.title("🏪 Retailers")
@@ -266,16 +334,20 @@ elif page == "🏪 Retailers":
     retailers = run_query("""
         SELECT 
             r.id,
+            r.slug,
             r.name,
             r.domain,
             r.platform,
             r.crawl_enabled,
+            r.crawl_frequency_hours,
             r.last_crawled_at,
             r.created_at,
+            r.updated_at,
             COUNT(DISTINCT p.id) as product_count
         FROM retailers r
         LEFT JOIN products p ON r.id = p.retailer_id
-        GROUP BY r.id, r.name, r.domain, r.platform, r.crawl_enabled, r.last_crawled_at, r.created_at
+        GROUP BY r.id, r.slug, r.name, r.domain, r.platform, r.crawl_enabled, 
+                 r.crawl_frequency_hours, r.last_crawled_at, r.created_at, r.updated_at
         ORDER BY product_count DESC
     """)
     
@@ -300,12 +372,17 @@ elif page == "🔗 Discovered URLs":
     
     query = """
         SELECT 
+            du.id,
+            du.job_id,
             du.url,
             du.url_type,
             du.source,
-            du.extracted,
+            du.depth,
             du.visited,
-            du.discovered_at
+            du.extracted,
+            du.product_id,
+            du.discovered_at,
+            du.visited_at
         FROM discovered_urls du
         WHERE 1=1
     """
@@ -347,22 +424,25 @@ elif page == "📋 Crawl Jobs":
     
     jobs = run_query("""
         SELECT 
-            id,
-            job_type,
-            status,
-            base_url,
-            urls_discovered,
-            urls_crawled,
-            products_found,
-            products_updated,
-            errors,
-            error_message,
-            created_at,
-            started_at,
-            completed_at,
-            EXTRACT(EPOCH FROM (completed_at - started_at)) as duration_seconds
-        FROM crawl_jobs
-        ORDER BY created_at DESC
+            cj.id,
+            cj.retailer_id,
+            r.name as retailer_name,
+            cj.base_url,
+            cj.job_type,
+            cj.status,
+            cj.urls_discovered,
+            cj.urls_crawled,
+            cj.products_found,
+            cj.products_updated,
+            cj.errors,
+            cj.error_message,
+            cj.created_at,
+            cj.started_at,
+            cj.completed_at,
+            EXTRACT(EPOCH FROM (cj.completed_at - cj.started_at)) as duration_seconds
+        FROM crawl_jobs cj
+        LEFT JOIN retailers r ON cj.retailer_id = r.id
+        ORDER BY cj.created_at DESC
         LIMIT 100
     """)
     
