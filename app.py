@@ -154,7 +154,7 @@ elif page == "🛍️ Products":
     st.title("🛍️ Products")
     
     # Filters
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         search = st.text_input("🔍 Search title", "")
     with col2:
@@ -165,6 +165,8 @@ elif page == "🛍️ Products":
         else:
             selected_retailer = "All"
     with col3:
+        has_price = st.checkbox("🏷️ Has Price", value=False)
+    with col4:
         limit = st.number_input("Limit", min_value=10, max_value=1000, value=100)
     
     # Build query - ALL fields (excluding removed columns: upc, mpn)
@@ -201,6 +203,8 @@ elif page == "🛍️ Products":
         query += f" AND p.title ILIKE '%{search}%'"
     if selected_retailer != "All":
         query += f" AND r.name = '{selected_retailer}'"
+    if has_price:
+        query += " AND p.price IS NOT NULL"
     
     query += f" ORDER BY p.first_seen_at DESC LIMIT {limit}"
     
@@ -304,7 +308,7 @@ elif page == "🏪 Store":
             
     else:
         # Filters at the top
-        col1, col2, col3 = st.columns([2, 1, 1])
+        col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
         with col1:
             search = st.text_input("🔍 Search products", "")
         with col2:
@@ -315,6 +319,8 @@ elif page == "🏪 Store":
             else:
                 selected_retailer = "All"
         with col3:
+            has_price_store = st.checkbox("🏷️ Has Price", value=False, key="store_has_price")
+        with col4:
             sort_by = st.selectbox("Sort by", ["Newest", "Price: Low to High", "Price: High to Low"])
 
         # Build query
@@ -332,6 +338,8 @@ elif page == "🏪 Store":
             query += f" AND p.title ILIKE '%{search}%'"
         if selected_retailer != "All":
             query += f" AND r.name = '{selected_retailer}'"
+        if has_price_store:
+            query += " AND p.price IS NOT NULL"
             
         if sort_by == "Newest":
             query += " ORDER BY p.first_seen_at DESC"
