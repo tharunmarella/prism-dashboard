@@ -97,7 +97,7 @@ def get_counts() -> dict:
 st.sidebar.title("🔮 Prism Dashboard")
 page = st.sidebar.radio(
     "Navigation",
-    ["📊 Overview", "🛍️ Products", "🖼️ Images", "💰 Price History", "🏪 Retailers", "🔗 Discovered URLs", "📋 Crawl Jobs", "🗑️ Clear Data"]
+    ["📊 Overview", "🛍️ Products", "🏪 Store", "🖼️ Images", "💰 Price History", "🏪 Retailers", "🔗 Discovered URLs", "📋 Crawl Jobs", "🗑️ Clear Data"]
 )
 
 # Overview Page
@@ -218,6 +218,155 @@ elif page == "🛍️ Products":
         st.download_button("📥 Download CSV", csv, "products.csv", "text/csv")
     else:
         st.info("No products found")
+
+
+# Store Page
+elif page == "🏪 Store":
+    # Selection of retailer on top like in products
+    st.title("🏪 Store")
+    
+    # Check if we are in detailed view
+    if st.session_state.get("selected_product_id"):
+        product_id = st.session_state.selected_product_id
+        
+        # Back button
+        if st.button("⬅️ Back to Store"):
+            st.session_state.selected_product_id = None
+            st.rerun()
+            
+        # Fetch product details
+        product = run_query(f"""
+            SELECT p.*, r.name as retailer_name 
+            FROM products p 
+            LEFT JOIN retailers r ON p.retailer_id = r.id 
+            WHERE p.id = '{product_id}'
+        """)
+        
+        if not product.empty:
+            p = product.iloc[0]
+            col1, col2 = st.columns([1, 1])
+            
+            with col1:
+                # Images
+                images = run_query(f"SELECT * FROM product_images WHERE product_id = '{product_id}' ORDER BY position")
+                if not images.empty:
+                    main_img = images.iloc[0]['stored_url'] or images.iloc[0]['source_url']
+                    st.image(main_img, use_container_width=True)
+                    
+                    # Gallery
+                    if len(images) > 1:
+                        cols = st.columns(5)
+                        for idx, img_row in images.iterrows():
+                            with cols[idx % 5]:
+                                st.image(img_row['stored_url'] or img_row['source_url'])
+                else:
+                    st.info("No images for this product")
+            
+            with col2:
+                st.header(p['title'])
+                st.subheader(f"{p['brand']} | {p['retailer_name']}")
+                
+                # Price section
+                if p['original_price'] and p['original_price'] > p['price']:
+                    st.markdown(f"### <span style='color:red'>${p['price']:.2f}</span> <span style='text-decoration:line-through; font-size: 0.8em; color:gray'>${p['original_price']:.2f}</span>", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"### ${p['price']:.2f}")
+                
+                st.write(f"**SKU:** {p['retailer_sku']}")
+                st.write(f"**Availability:** {'✅ In Stock' if p['in_stock'] else '❌ Out of Stock'}")
+                if p['rating']:
+                    st.write(f"**Rating:** {p['rating']} ⭐ ({int(p['review_count'] or 0)} reviews)")
+                
+                st.divider()
+                st.write("**Description:**")
+                st.write(p['description'] or "No description available.")
+                
+                st.link_button("View on Retailer Site", p['url'])
+                
+            # Price History Chart
+            st.divider()
+            st.subheader("💰 Price History")
+            history = run_query(f"SELECT price, recorded_at FROM product_prices WHERE product_id = '{product_id}' ORDER BY recorded_at")
+            if not history.empty:
+                history['recorded_at'] = pd.to_datetime(history['recorded_at'])
+                st.line_chart(history.set_index('recorded_at')['price'])
+            else:
+                st.info("No price history recorded yet.")
+        else:
+            st.error("Product not found.")
+            st.session_state.selected_product_id = None
+            
+    else:
+        # Filters at the top
+        col1, col2, col3 = st.columns([2, 1, 1])
+        with col1:
+            search = st.text_input("🔍 Search products", "")
+        with col2:
+            retailers = run_query("SELECT id, name FROM retailers ORDER BY name")
+            if not retailers.empty:
+                retailer_options = ["All"] + retailers['name'].tolist()
+                selected_retailer = st.selectbox("🏪 Retailer", retailer_options, key="store_retailer")
+            else:
+                selected_retailer = "All"
+        with col3:
+            sort_by = st.selectbox("Sort by", ["Newest", "Price: Low to High", "Price: High to Low"])
+
+        # Build query
+        query = """
+            SELECT 
+                p.id, p.title, p.price, p.original_price, p.brand,
+                (SELECT stored_url FROM product_images WHERE product_id = p.id ORDER BY position LIMIT 1) as img_url,
+                (SELECT source_url FROM product_images WHERE product_id = p.id ORDER BY position LIMIT 1) as fallback_img
+            FROM products p
+            LEFT JOIN retailers r ON p.retailer_id = r.id
+            WHERE 1=1
+        """
+        
+        if search:
+            query += f" AND p.title ILIKE '%{search}%'"
+        if selected_retailer != "All":
+            query += f" AND r.name = '{selected_retailer}'"
+            
+        if sort_by == "Newest":
+            query += " ORDER BY p.first_seen_at DESC"
+        elif sort_by == "Price: Low to High":
+            query += " ORDER BY p.price ASC"
+        else:
+            query += " ORDER BY p.price DESC"
+            
+        query += " LIMIT 40"
+        
+        products = run_query(query)
+        
+        if not products.empty:
+            # Display products in a grid
+            cols_per_row = 4
+            for i in range(0, len(products), cols_per_row):
+                cols = st.columns(cols_per_row)
+                for j, col in enumerate(cols):
+                    idx = i + j
+                    if idx < len(products):
+                        p = products.iloc[idx]
+                        with col:
+                            img = p['img_url'] or p['fallback_img']
+                            if img:
+                                st.image(img, use_container_width=True)
+                            else:
+                                st.image("https://via.placeholder.com/200x200?text=No+Image", use_container_width=True)
+                            
+                            st.write(f"**{p['title'][:50]}...**" if len(p['title']) > 50 else f"**{p['title']}**")
+                            st.write(f"{p['brand']}")
+                            
+                            if p['original_price'] and p['original_price'] > p['price']:
+                                st.markdown(f"<span style='color:red'>${p['price']:.2f}</span> <span style='text-decoration:line-through; color:gray'>${p['original_price']:.2f}</span>", unsafe_allow_html=True)
+                            else:
+                                st.write(f"${p['price']:.2f}")
+                            
+                            if st.button("View Details", key=f"btn_{p['id']}"):
+                                st.session_state.selected_product_id = p['id']
+                                st.rerun()
+        else:
+            st.info("No products found matching your criteria.")
 
 
 # Images Page
