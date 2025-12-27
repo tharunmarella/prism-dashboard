@@ -8,9 +8,11 @@ Run:
 """
 
 import os
+import json
 from datetime import datetime
 
 import pandas as pd
+import redis
 import streamlit as st
 from sqlalchemy import create_engine, text
 
@@ -66,6 +68,139 @@ def get_db_engine():
     return create_engine(sync_url)
 
 
+@st.cache_resource
+def get_redis_client():
+    """Create Redis connection."""
+    redis_url = os.getenv("REDIS_URL", "")
+    if not redis_url:
+        return None
+    return redis.from_url(redis_url, decode_responses=True)
+
+
+def get_queue_stats():
+    """Get stats for all Dramatiq queues."""
+    r = get_redis_client()
+    if not r:
+        return {}
+    
+    queues = ["orchestrate", "platform", "discover", "extract", "index", "price"]
+    stats = {}
+    
+    for queue in queues:
+        queue_key = f"dramatiq:{queue}.msgs"
+        try:
+            stats[queue] = r.llen(queue_key)
+        except:
+            stats[queue] = 0
+    
+    return stats
+
+
+def get_dlq_jobs():
+    """Get all jobs from Dead Letter Queue."""
+    r = get_redis_client()
+    if not r:
+        return []
+    
+    dlq_key = "prism:dlq"
+    try:
+        jobs_raw = r.zrange(dlq_key, 0, -1, withscores=True)
+        jobs = []
+        for job_data, timestamp in jobs_raw:
+            try:
+                job = json.loads(job_data)
+                job['failed_at'] = datetime.fromtimestamp(timestamp)
+                jobs.append(job)
+            except:
+                pass
+        return jobs
+    except:
+        return []
+
+
+def clear_queue(queue_name: str) -> int:
+    """Clear a specific queue."""
+    r = get_redis_client()
+    if not r:
+        return 0
+    
+    queue_key = f"dramatiq:{queue_name}.msgs"
+    count = r.llen(queue_key)
+    r.delete(queue_key)
+    return count
+
+
+def clear_all_queues() -> dict:
+    """Clear all queues."""
+    queues = ["orchestrate", "platform", "discover", "extract", "index", "price"]
+    results = {}
+    for queue in queues:
+        results[queue] = clear_queue(queue)
+    return results
+
+
+def clear_dlq() -> int:
+    """Clear Dead Letter Queue."""
+    r = get_redis_client()
+    if not r:
+        return 0
+    
+    dlq_key = "prism:dlq"
+    count = r.zcard(dlq_key)
+    r.delete(dlq_key)
+    return count
+
+
+def get_active_jobs():
+    """Get active jobs with progress."""
+    r = get_redis_client()
+    if not r:
+        return []
+    
+    try:
+        # Scan for progress keys
+        progress_keys = list(r.scan_iter("prism:progress:*"))
+        jobs = []
+        
+        for key in progress_keys:
+            try:
+                data = r.hgetall(key)
+                if data:
+                    job_id = key.replace("prism:progress:", "")
+                    jobs.append({
+                        "job_id": job_id,
+                        "phase": data.get("phase", "unknown"),
+                        "current": int(data.get("current", 0)),
+                        "total": int(data.get("total", 0)),
+                        "percent": float(data.get("percent", 0)),
+                        "updated_at": data.get("updated_at", "")
+                    })
+            except:
+                pass
+        
+        return jobs
+    except:
+        return []
+
+
+def get_redis_info():
+    """Get Redis server info."""
+    r = get_redis_client()
+    if not r:
+        return {}
+    
+    try:
+        info = r.info()
+        return {
+            "memory": info.get("used_memory_human", "N/A"),
+            "clients": info.get("connected_clients", 0),
+            "keys": r.dbsize(),
+            "uptime": info.get("uptime_in_days", 0)
+        }
+    except:
+        return {}
+
+
 def run_query(query: str) -> pd.DataFrame:
     """Run a SQL query and return a DataFrame."""
     engine = get_db_engine()
@@ -97,7 +232,7 @@ def get_counts() -> dict:
 st.sidebar.title("🔮 Prism Dashboard")
 page = st.sidebar.radio(
     "Navigation",
-    ["📊 Overview", "🛍️ Products", "🏪 Store", "🖼️ Images", "💰 Price History", "🏪 Retailers", "🔗 Discovered URLs", "📋 Crawl Jobs", "🗑️ Clear Data"]
+    ["📊 Overview", "📬 Queues", "🛍️ Products", "🏪 Store", "🖼️ Images", "💰 Price History", "🏪 Retailers", "🔗 Discovered URLs", "📋 Crawl Jobs", "🗑️ Clear Data"]
 )
 
 # Overview Page
@@ -147,6 +282,129 @@ if page == "📊 Overview":
         st.dataframe(recent_jobs, use_container_width=True)
     else:
         st.info("No crawl jobs yet")
+
+
+# Queues Page
+elif page == "📬 Queues":
+    st.title("📬 Queue Management")
+    
+    # Check Redis connection
+    r = get_redis_client()
+    if not r:
+        st.error("❌ REDIS_URL not set! Cannot connect to queues.")
+        st.info("Set REDIS_URL in your environment variables.")
+        st.stop()
+    
+    # Auto-refresh toggle
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        auto_refresh = st.checkbox("🔄 Auto-refresh (5s)", value=False)
+        if auto_refresh:
+            import time
+            time.sleep(5)
+            st.rerun()
+    
+    # Queue Stats
+    st.subheader("📊 Queue Status")
+    
+    queue_stats = get_queue_stats()
+    total_pending = sum(queue_stats.values())
+    
+    # Queue metrics in columns
+    cols = st.columns(6)
+    queue_names = ["orchestrate", "platform", "discover", "extract", "index", "price"]
+    queue_icons = ["🎯", "🏪", "🔍", "📦", "📇", "💰"]
+    
+    for i, (queue, icon) in enumerate(zip(queue_names, queue_icons)):
+        count = queue_stats.get(queue, 0)
+        cols[i].metric(f"{icon} {queue.title()}", count)
+    
+    st.divider()
+    
+    # Active Jobs with Progress
+    st.subheader("⏳ Active Jobs")
+    
+    active_jobs = get_active_jobs()
+    if active_jobs:
+        for job in active_jobs:
+            col1, col2, col3 = st.columns([2, 4, 1])
+            with col1:
+                st.text(f"🔹 {job['job_id'][:8]}...")
+            with col2:
+                progress = job['percent'] / 100
+                st.progress(progress, text=f"{job['phase']} - {job['percent']:.1f}% ({job['current']}/{job['total']})")
+            with col3:
+                st.text(job.get('updated_at', '')[:10] if job.get('updated_at') else '')
+    else:
+        st.info("No active jobs running")
+    
+    st.divider()
+    
+    # Dead Letter Queue
+    st.subheader("💀 Dead Letter Queue")
+    
+    dlq_jobs = get_dlq_jobs()
+    dlq_count = len(dlq_jobs)
+    
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.metric("Failed Jobs", dlq_count)
+    with col2:
+        if dlq_count > 0:
+            if st.button("🗑️ Clear DLQ", type="secondary"):
+                cleared = clear_dlq()
+                st.success(f"Cleared {cleared} failed jobs")
+                st.rerun()
+    
+    if dlq_jobs:
+        # Show DLQ jobs as expandable
+        for job in dlq_jobs[:20]:  # Limit to 20
+            with st.expander(f"❌ {job.get('actor', 'unknown')} - {job.get('failed_at', '')}"):
+                st.json(job)
+    
+    st.divider()
+    
+    # Queue Controls
+    st.subheader("🎛️ Queue Controls")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.write("**Clear Individual Queue**")
+        queue_to_clear = st.selectbox("Select queue", queue_names)
+        queue_count = queue_stats.get(queue_to_clear, 0)
+        
+        if queue_count > 0:
+            if st.button(f"🗑️ Clear {queue_to_clear} ({queue_count} jobs)", type="secondary"):
+                cleared = clear_queue(queue_to_clear)
+                st.success(f"Cleared {cleared} jobs from {queue_to_clear}")
+                st.rerun()
+        else:
+            st.info(f"{queue_to_clear} queue is empty")
+    
+    with col2:
+        st.write("**Clear All Queues**")
+        st.warning(f"⚠️ This will clear {total_pending} pending jobs!")
+        
+        confirm = st.checkbox("I confirm I want to clear all queues")
+        if confirm and total_pending > 0:
+            if st.button("☢️ Clear All Queues", type="primary"):
+                results = clear_all_queues()
+                total_cleared = sum(results.values())
+                st.success(f"Cleared {total_cleared} jobs from all queues")
+                st.rerun()
+    
+    st.divider()
+    
+    # Redis Info
+    st.subheader("📈 Redis Info")
+    
+    redis_info = get_redis_info()
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Memory", redis_info.get("memory", "N/A"))
+    col2.metric("Clients", redis_info.get("clients", 0))
+    col3.metric("Total Keys", redis_info.get("keys", 0))
+    col4.metric("Uptime (days)", redis_info.get("uptime", 0))
 
 
 # Products Page
