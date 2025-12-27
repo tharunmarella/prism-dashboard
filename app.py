@@ -87,35 +87,57 @@ def get_queue_stats():
     stats = {}
     
     for queue in queues:
-        queue_key = f"dramatiq:{queue}.msgs"
+        # Dramatiq uses `dramatiq:{queue}` as the main queue (list)
+        # NOT `dramatiq:{queue}.msgs` which is a hash for message metadata
+        queue_key = f"dramatiq:{queue}"
+        dlq_key = f"dramatiq:{queue}.XQ"
         try:
-            stats[queue] = r.llen(queue_key)
+            pending = r.llen(queue_key) if r.type(queue_key) == 'list' else 0
+            failed = r.zcard(dlq_key) if r.exists(dlq_key) else 0
+            stats[queue] = {"pending": pending, "failed": failed}
         except:
-            stats[queue] = 0
+            stats[queue] = {"pending": 0, "failed": 0}
     
     return stats
 
 
 def get_dlq_jobs():
-    """Get all jobs from Dead Letter Queue."""
+    """Get all jobs from Dramatiq Dead Letter Queues (.XQ)."""
     r = get_redis_client()
     if not r:
         return []
     
-    dlq_key = "prism:dlq"
-    try:
-        jobs_raw = r.zrange(dlq_key, 0, -1, withscores=True)
-        jobs = []
-        for job_data, timestamp in jobs_raw:
-            try:
-                job = json.loads(job_data)
-                job['failed_at'] = datetime.fromtimestamp(timestamp)
-                jobs.append(job)
-            except:
-                pass
-        return jobs
-    except:
-        return []
+    queues = ["orchestrate", "platform", "discover", "extract", "index", "price"]
+    all_jobs = []
+    
+    for queue in queues:
+        dlq_key = f"dramatiq:{queue}.XQ"
+        msgs_key = f"dramatiq:{queue}.XQ.msgs"
+        
+        try:
+            # XQ is a sorted set with message IDs and timestamps
+            message_ids = r.zrange(dlq_key, 0, 100, withscores=True)  # Limit to 100
+            
+            for msg_id, timestamp in message_ids:
+                try:
+                    # Message body is in the .XQ.msgs hash
+                    msg_data = r.hget(msgs_key, msg_id)
+                    if msg_data:
+                        job = json.loads(msg_data)
+                        job['queue'] = queue
+                        job['failed_at'] = datetime.fromtimestamp(timestamp / 1000)  # Dramatiq uses milliseconds
+                        all_jobs.append(job)
+                except:
+                    all_jobs.append({
+                        'queue': queue,
+                        'message_id': msg_id,
+                        'failed_at': datetime.fromtimestamp(timestamp / 1000),
+                        'error': 'Could not parse message'
+                    })
+        except:
+            pass
+    
+    return sorted(all_jobs, key=lambda x: x.get('failed_at', datetime.min), reverse=True)
 
 
 def clear_queue(queue_name: str) -> int:
@@ -124,9 +146,16 @@ def clear_queue(queue_name: str) -> int:
     if not r:
         return 0
     
-    queue_key = f"dramatiq:{queue_name}.msgs"
-    count = r.llen(queue_key)
+    # Dramatiq uses `dramatiq:{queue}` as the main queue (list)
+    queue_key = f"dramatiq:{queue_name}"
+    msgs_key = f"dramatiq:{queue_name}.msgs"
+    
+    count = r.llen(queue_key) if r.type(queue_key) == 'list' else 0
+    
+    # Clear both the queue and message metadata
     r.delete(queue_key)
+    r.delete(msgs_key)
+    
     return count
 
 
@@ -140,15 +169,30 @@ def clear_all_queues() -> dict:
 
 
 def clear_dlq() -> int:
-    """Clear Dead Letter Queue."""
+    """Clear all Dramatiq Dead Letter Queues (.XQ)."""
     r = get_redis_client()
     if not r:
         return 0
     
-    dlq_key = "prism:dlq"
-    count = r.zcard(dlq_key)
-    r.delete(dlq_key)
-    return count
+    queues = ["orchestrate", "platform", "discover", "extract", "index", "price"]
+    total_cleared = 0
+    
+    for queue in queues:
+        dlq_key = f"dramatiq:{queue}.XQ"
+        msgs_key = f"dramatiq:{queue}.XQ.msgs"
+        
+        if r.exists(dlq_key):
+            count = r.zcard(dlq_key)
+            r.delete(dlq_key)
+            r.delete(msgs_key)
+            total_cleared += count
+    
+    # Also clear legacy prism:dlq if it exists
+    if r.exists("prism:dlq"):
+        total_cleared += r.zcard("prism:dlq")
+        r.delete("prism:dlq")
+    
+    return total_cleared
 
 
 def get_active_jobs():
@@ -308,7 +352,8 @@ elif page == "📬 Queues":
     st.subheader("📊 Queue Status")
     
     queue_stats = get_queue_stats()
-    total_pending = sum(queue_stats.values())
+    total_pending = sum(s.get('pending', 0) for s in queue_stats.values())
+    total_failed = sum(s.get('failed', 0) for s in queue_stats.values())
     
     # Queue metrics in columns
     cols = st.columns(6)
@@ -316,8 +361,11 @@ elif page == "📬 Queues":
     queue_icons = ["🎯", "🏪", "🔍", "📦", "📇", "💰"]
     
     for i, (queue, icon) in enumerate(zip(queue_names, queue_icons)):
-        count = queue_stats.get(queue, 0)
-        cols[i].metric(f"{icon} {queue.title()}", count)
+        stats = queue_stats.get(queue, {"pending": 0, "failed": 0})
+        pending = stats.get('pending', 0)
+        failed = stats.get('failed', 0)
+        delta = f"-{failed} failed" if failed > 0 else None
+        cols[i].metric(f"{icon} {queue.title()}", pending, delta=delta, delta_color="inverse")
     
     st.divider()
     
@@ -372,7 +420,8 @@ elif page == "📬 Queues":
     with col1:
         st.write("**Clear Individual Queue**")
         queue_to_clear = st.selectbox("Select queue", queue_names)
-        queue_count = queue_stats.get(queue_to_clear, 0)
+        queue_info = queue_stats.get(queue_to_clear, {"pending": 0, "failed": 0})
+        queue_count = queue_info.get('pending', 0)
         
         if queue_count > 0:
             if st.button(f"🗑️ Clear {queue_to_clear} ({queue_count} jobs)", type="secondary"):
