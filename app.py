@@ -354,7 +354,7 @@ elif page == "🔍 Semantic Search":
                     "limit": limit
                 }
                 
-                response = requests.get(f"{api_url}/search?{urlencode(params)}", timeout=30)
+                response = requests.get(f"{api_url}/api/v1/search?{urlencode(params)}", timeout=30)
                 
                 if response.status_code == 200:
                     data = response.json()
