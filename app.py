@@ -276,7 +276,7 @@ def get_counts() -> dict:
 st.sidebar.title("🔮 Prism Dashboard")
 page = st.sidebar.radio(
     "Navigation",
-    ["📊 Overview", "📬 Queues", "🛍️ Products", "🏪 Store", "🖼️ Images", "💰 Price History", "🏪 Retailers", "🔗 Discovered URLs", "📋 Crawl Jobs", "🗑️ Clear Data"]
+    ["📊 Overview", "🔍 Semantic Search", "📬 Queues", "🛍️ Products", "🏪 Store", "🖼️ Images", "💰 Price History", "🏪 Retailers", "🔗 Discovered URLs", "📋 Crawl Jobs", "🗑️ Clear Data"]
 )
 
 # Overview Page
@@ -309,6 +309,198 @@ if page == "📊 Overview":
         st.caption(f"Fields: {', '.join(recent_products.columns)}")
         st.dataframe(recent_products, use_container_width=True)
     else:
+        st.info("No products yet")
+
+# Semantic Search Page
+elif page == "🔍 Semantic Search":
+    st.title("🔍 Semantic Search")
+    st.caption("AI-powered product search using vector embeddings")
+    
+    # Search input
+    search_query = st.text_input(
+        "Search Query",
+        placeholder="Try: 'minimalist white watch with red button' or 'laptop for college students'",
+        help="Use natural language to describe what you're looking for"
+    )
+    
+    col1, col2, col3 = st.columns([2, 2, 1])
+    with col1:
+        search_mode = st.selectbox(
+            "Search Mode",
+            ["hybrid", "semantic", "text"],
+            help="Hybrid combines semantic + filters (recommended)"
+        )
+    with col2:
+        limit = st.number_input("Results", min_value=5, max_value=50, value=10)
+    with col3:
+        st.write("")  # Spacer
+        search_button = st.button("🔍 Search", type="primary", use_container_width=True)
+    
+    if search_query and (search_button or st.session_state.get("last_search") != search_query):
+        st.session_state["last_search"] = search_query
+        
+        with st.spinner("Searching..."):
+            try:
+                # Use prism-core vector_client
+                import sys
+                import os
+                sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'prism-core')))
+                
+                if search_mode == "semantic":
+                    # Pure semantic search
+                    from prism_core.services import vector_client
+                    import asyncio
+                    
+                    async def search():
+                        return await vector_client.search_products(
+                            query=search_query,
+                            limit=limit,
+                            retailer_id=None
+                        )
+                    
+                    results = asyncio.run(search())
+                    
+                    # Fetch product details
+                    if results:
+                        product_ids = [r["product_id"] for r in results]
+                        product_ids_str = ",".join([f"'{pid}'" for pid in product_ids])
+                        
+                        df = run_query(f"""
+                            SELECT 
+                                p.id,
+                                p.title,
+                                p.brand,
+                                p.price,
+                                p.currency,
+                                r.name as retailer,
+                                p.url,
+                                p.enriched_data
+                            FROM products p
+                            LEFT JOIN retailers r ON p.retailer_id = r.id
+                            WHERE p.id::text IN ({product_ids_str})
+                        """)
+                        
+                        # Add scores
+                        scores = {r["product_id"]: r["score"] for r in results}
+                        df["similarity_score"] = df["id"].astype(str).map(scores)
+                        df = df.sort_values("similarity_score", ascending=False)
+                        
+                    else:
+                        df = pd.DataFrame()
+                
+                elif search_mode == "text":
+                    # Text search via Meilisearch
+                    from prism_core.services import search_client
+                    import asyncio
+                    
+                    async def search():
+                        return await search_client.search(
+                            query=search_query,
+                            limit=limit
+                        )
+                    
+                    meili_results = asyncio.run(search())
+                    
+                    if meili_results["hits"]:
+                        product_ids = [h["id"] for h in meili_results["hits"]]
+                        product_ids_str = ",".join([f"'{pid}'" for pid in product_ids])
+                        
+                        df = run_query(f"""
+                            SELECT 
+                                p.id,
+                                p.title,
+                                p.brand,
+                                p.price,
+                                p.currency,
+                                r.name as retailer,
+                                p.url,
+                                p.enriched_data
+                            FROM products p
+                            LEFT JOIN retailers r ON p.retailer_id = r.id
+                            WHERE p.id::text IN ({product_ids_str})
+                        """)
+                        
+                        # Add scores
+                        scores = {h["id"]: h.get("_rankingScore", 0) for h in meili_results["hits"]}
+                        df["text_score"] = df["id"].astype(str).map(scores)
+                        df = df.sort_values("text_score", ascending=False)
+                    else:
+                        df = pd.DataFrame()
+                
+                else:  # hybrid
+                    # Get semantic results first
+                    from prism_core.services import vector_client
+                    import asyncio
+                    
+                    async def search():
+                        return await vector_client.search_products(
+                            query=search_query,
+                            limit=limit * 2,  # Get more for filtering
+                            retailer_id=None
+                        )
+                    
+                    results = asyncio.run(search())
+                    
+                    if results:
+                        product_ids = [r["product_id"] for r in results]
+                        product_ids_str = ",".join([f"'{pid}'" for pid in product_ids])
+                        
+                        df = run_query(f"""
+                            SELECT 
+                                p.id,
+                                p.title,
+                                p.brand,
+                                p.price,
+                                p.currency,
+                                r.name as retailer,
+                                p.url,
+                                p.enriched_data
+                            FROM products p
+                            LEFT JOIN retailers r ON p.retailer_id = r.id
+                            WHERE p.id::text IN ({product_ids_str})
+                            LIMIT {limit}
+                        """)
+                        
+                        scores = {r["product_id"]: r["score"] for r in results}
+                        df["similarity_score"] = df["id"].astype(str).map(scores)
+                        df = df.sort_values("similarity_score", ascending=False)
+                    else:
+                        df = pd.DataFrame()
+                
+                # Display results
+                if not df.empty:
+                    st.success(f"✅ Found {len(df)} results")
+                    
+                    # Show results as cards
+                    for idx, row in df.iterrows():
+                        with st.expander(f"**{row['title']}** - {row['brand'] or 'Unknown Brand'}", expanded=(idx == 0)):
+                            col1, col2 = st.columns([3, 1])
+                            
+                            with col1:
+                                st.write(f"**Retailer:** {row['retailer']}")
+                                st.write(f"**Price:** {row['price']} {row['currency']}")
+                                
+                                score_col = "similarity_score" if "similarity_score" in df.columns else "text_score"
+                                if score_col in df.columns and pd.notna(row[score_col]):
+                                    st.write(f"**Match Score:** {row[score_col]:.3f}")
+                                
+                                st.write(f"[🔗 View Product]({row['url']})")
+                                
+                                # Show semantic summary if available
+                                if pd.notna(row['enriched_data']) and isinstance(row['enriched_data'], dict):
+                                    summary = row['enriched_data'].get('semantic_summary')
+                                    if summary:
+                                        st.info(f"**AI Description:** {summary}")
+                            
+                            with col2:
+                                st.caption(f"ID: {row['id']}")
+                else:
+                    st.warning("No results found")
+                    
+            except Exception as e:
+                st.error(f"Search error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
         st.info("No products yet")
     
     # Recent Jobs
