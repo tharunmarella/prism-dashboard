@@ -406,30 +406,49 @@ elif page == "📤 Batch Scrape":
                             
                             r.set(f"prism:batch:{batch_id}", json.dumps(batch_data), ex=60*60*24*7)  # 7 day TTL
                             
-                            # Queue each domain
-                            queued = 0
+                        # Queue each domain via prism-api
+                        api_url = os.getenv("PRISM_API_URL", "https://prism-api-production.up.railway.app")
+                        queued = 0
+                        errors = []
+                        
+                        import requests
+                        
+                        progress_bar = st.progress(0, text="Queuing stores...")
+                        
+                        for i, domain in enumerate(cleaned_domains):
                             try:
-                                from prism_worker.tasks import orchestrate_job
-                                
-                                for domain in cleaned_domains:
-                                    url = f"https://{domain}"
-                                    orchestrate_job.send(url, locale="us")
+                                url = f"https://{domain}"
+                                resp = requests.post(
+                                    f"{api_url}/api/v1/jobs",
+                                    json={"url": url},
+                                    timeout=10
+                                )
+                                if resp.status_code in (200, 201):
                                     queued += 1
-                                
-                                # Update status
-                                batch_data["status"] = "running"
-                                batch_data["in_progress"] = queued
-                                batch_data["pending"] = 0
-                                r.set(f"prism:batch:{batch_id}", json.dumps(batch_data), ex=60*60*24*7)
-                                
-                                st.success(f"✅ Queued {queued} stores! Batch ID: `{batch_id}`")
-                                st.info("Switch to the **Monitor Batches** tab to track progress.")
-                                
-                            except ImportError:
-                                st.warning("⚠️ prism_worker not available. Batch saved but jobs not queued.")
-                                st.info(f"Run manually: `python scripts/bootstrap_stores.py --input <your_csv> --name '{batch_name}'`")
+                                else:
+                                    errors.append(f"{domain}: HTTP {resp.status_code}")
                             except Exception as e:
-                                st.error(f"Failed to queue jobs: {e}")
+                                errors.append(f"{domain}: {str(e)}")
+                            
+                            # Update progress
+                            progress_bar.progress((i + 1) / len(cleaned_domains), text=f"Queuing {i+1}/{len(cleaned_domains)}...")
+                        
+                        # Update batch status
+                        batch_data["status"] = "running"
+                        batch_data["in_progress"] = queued
+                        batch_data["pending"] = len(cleaned_domains) - queued
+                        r.set(f"prism:batch:{batch_id}", json.dumps(batch_data), ex=60*60*24*7)
+                        
+                        progress_bar.empty()
+                        
+                        if queued > 0:
+                            st.success(f"✅ Queued {queued}/{len(cleaned_domains)} stores! Batch ID: `{batch_id}`")
+                            st.info("Switch to the **Monitor Batches** tab to track progress.")
+                        
+                        if errors:
+                            with st.expander(f"⚠️ {len(errors)} errors"):
+                                for err in errors[:20]:
+                                    st.text(err)
                     
             except Exception as e:
                 st.error(f"Failed to read CSV: {e}")
