@@ -96,11 +96,28 @@ def get_db_engine():
     logger.info(f"Creating database engine for: {masked_url}")
     
     try:
-        engine = create_engine(sync_url)
+        # Add connection timeout and pool settings
+        engine = create_engine(
+            sync_url,
+            connect_args={
+                "connect_timeout": 10,  # 10 second connection timeout
+            },
+            pool_pre_ping=True,  # Test connections before using
+            pool_size=5,
+            max_overflow=10,
+            pool_timeout=30,
+        )
         logger.info("Database engine created successfully")
+        
+        # Test the connection immediately
+        logger.info("Testing database connection...")
+        with engine.connect() as test_conn:
+            test_conn.execute(text("SELECT 1"))
+        logger.info("Database connection test PASSED")
+        
         return engine
     except Exception as e:
-        logger.exception(f"Failed to create database engine: {e}")
+        logger.exception(f"Failed to create/test database engine: {e}")
         raise
 
 
