@@ -79,7 +79,11 @@ st.markdown("""
 @st.cache_resource
 def get_db_engine():
     """Create database connection."""
-    db_url = os.getenv("DATABASE_URL", "")
+    # Use direct PostgreSQL URL (bypassing PgBouncer)
+    db_url = os.getenv(
+        "DATABASE_URL", 
+        "postgresql://postgres:BRekrvFMzlBZkuGrJogNBRVFnFQWLqZf@postgres.railway.internal:5432/railway"
+    )
     logger.info("Attempting to create database connection...")
     
     if not db_url:
