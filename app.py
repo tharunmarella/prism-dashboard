@@ -98,15 +98,7 @@ def get_db_engine():
     try:
         # PgBouncer-compatible settings:
         # - NullPool: Don't pool connections (let PgBouncer handle pooling)
-        # - No startup parameters in options (PgBouncer doesn't support them)
         from sqlalchemy.pool import NullPool
-        
-        # Build URL with pgbouncer-compatible options
-        # Disable prepared statements which don't work with transaction pooling
-        if "?" in sync_url:
-            sync_url += "&prepare_threshold=0"
-        else:
-            sync_url += "?prepare_threshold=0"
         
         engine = create_engine(
             sync_url,
@@ -116,9 +108,6 @@ def get_db_engine():
             },
         )
         logger.info("Database engine created successfully (PgBouncer-compatible mode)")
-        
-        # Don't test connection here - let the first query test it
-        # This prevents blocking the Streamlit UI
         return engine
     except Exception as e:
         logger.exception(f"Failed to create database engine: {e}")
