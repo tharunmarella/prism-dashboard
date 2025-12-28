@@ -477,30 +477,81 @@ elif page == "📤 Batch Scrape":
                     
                     batch_id = batch_data.get("batch_id", key.replace("prism:batch:", ""))
                     batch_name = batch_data.get("batch_name", "Unknown")
-                    total = batch_data.get("total", 0)
-                    completed = batch_data.get("completed", 0)
-                    failed = batch_data.get("failed", 0)
-                    percent = batch_data.get("percent", 0)
-                    status = batch_data.get("status", "unknown")
+                    domains = batch_data.get("domains", [])
+                    total = len(domains) if domains else batch_data.get("total", 0)
+                    started_at = batch_data.get("started_at", "")
                     
-                    with st.expander(f"**{batch_name}** ({batch_id}) - {percent:.1f}%", expanded=(status == "running")):
+                    # Query database for actual job status
+                    completed = 0
+                    failed = 0
+                    running = 0
+                    pending = 0
+                    products_total = 0
+                    
+                    if domains:
+                        # Build query for these domains
+                        domain_patterns = [f"%{d}%" for d in domains[:50]]  # Limit to 50 for query
+                        
+                        engine = get_db_engine()
+                        with engine.connect() as conn:
+                            for domain in domains:
+                                result = conn.execute(text(f"""
+                                    SELECT status, products_found 
+                                    FROM crawl_jobs 
+                                    WHERE base_url LIKE :pattern
+                                    ORDER BY created_at DESC 
+                                    LIMIT 1
+                                """), {"pattern": f"%{domain}%"})
+                                row = result.fetchone()
+                                
+                                if row:
+                                    status = row[0]
+                                    products = row[1] or 0
+                                    
+                                    if status == "completed":
+                                        completed += 1
+                                        products_total += products
+                                    elif status == "failed":
+                                        failed += 1
+                                    elif status in ("running", "queued"):
+                                        running += 1
+                                    else:
+                                        pending += 1
+                                else:
+                                    pending += 1
+                    
+                    # Calculate percent
+                    percent = (completed / total * 100) if total > 0 else 0
+                    
+                    # Determine overall status
+                    if completed + failed >= total:
+                        overall_status = "completed" if failed == 0 else "completed with errors"
+                    elif running > 0:
+                        overall_status = "running"
+                    else:
+                        overall_status = "pending"
+                    
+                    with st.expander(f"**{batch_name}** ({batch_id}) - {percent:.1f}%", expanded=(overall_status == "running")):
                         # Progress bar
-                        st.progress(percent / 100, text=f"{completed}/{total} stores completed")
+                        st.progress(min(percent / 100, 1.0), text=f"{completed}/{total} stores completed")
                         
                         # Stats row
-                        col1, col2, col3, col4 = st.columns(4)
+                        col1, col2, col3, col4, col5 = st.columns(5)
                         col1.metric("Total", total)
-                        col2.metric("Completed", completed)
-                        col3.metric("Failed", failed)
-                        col4.metric("Status", status.upper())
+                        col2.metric("✅ Done", completed)
+                        col3.metric("🔄 Running", running)
+                        col4.metric("❌ Failed", failed)
+                        col5.metric("📦 Products", products_total)
+                        
+                        # Status badge
+                        status_colors = {"running": "🟢", "completed": "✅", "pending": "🟡", "completed with errors": "🟠"}
+                        st.write(f"**Status:** {status_colors.get(overall_status, '⚪')} {overall_status.upper()}")
                         
                         # Timing
-                        started = batch_data.get("started_at", "")
-                        updated = batch_data.get("updated_at", "")
-                        st.caption(f"Started: {started[:19] if started else 'N/A'} | Last update: {updated[:19] if updated else 'N/A'}")
+                        st.caption(f"Started: {started_at[:19] if started_at else 'N/A'}")
                         
                         # Delete button
-                        if st.button(f"🗑️ Delete", key=f"del_{batch_id}"):
+                        if st.button(f"🗑️ Delete Batch", key=f"del_{batch_id}"):
                             r.delete(key)
                             st.rerun()
                             
