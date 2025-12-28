@@ -276,7 +276,7 @@ def get_counts() -> dict:
 st.sidebar.title("🔮 Prism Dashboard")
 page = st.sidebar.radio(
     "Navigation",
-    ["📊 Overview", "🔍 Semantic Search", "📬 Queues", "🛍️ Products", "🏪 Store", "🖼️ Images", "💰 Price History", "🏪 Retailers", "🔗 Discovered URLs", "📋 Crawl Jobs", "🗑️ Clear Data"]
+    ["📊 Overview", "📤 Batch Scrape", "🔍 Semantic Search", "📬 Queues", "🛍️ Products", "🏪 Store", "🖼️ Images", "💰 Price History", "🏪 Retailers", "🔗 Discovered URLs", "📋 Crawl Jobs", "🗑️ Clear Data"]
 )
 
 # Overview Page
@@ -310,6 +310,186 @@ if page == "📊 Overview":
         st.dataframe(recent_products, use_container_width=True)
     else:
         st.info("No products yet")
+
+# Batch Scrape Page
+elif page == "📤 Batch Scrape":
+    st.title("📤 Batch Scrape")
+    st.caption("Upload a CSV file with store domains to scrape")
+    
+    # Check connections
+    r = get_redis_client()
+    if not r:
+        st.error("❌ REDIS_URL not set! Cannot track batch progress.")
+        st.stop()
+    
+    # Tab layout: Upload vs Monitor
+    tab1, tab2 = st.tabs(["📤 Upload CSV", "📊 Monitor Batches"])
+    
+    with tab1:
+        st.subheader("Upload Store List")
+        
+        uploaded_file = st.file_uploader(
+            "Choose a CSV file",
+            type=["csv"],
+            help="CSV should have a column with domain names (e.g., 'domain', 'current_domain', or 'url')"
+        )
+        
+        if uploaded_file is not None:
+            try:
+                import io
+                df = pd.read_csv(uploaded_file)
+                
+                st.success(f"✅ Loaded {len(df)} rows")
+                
+                # Try to find domain column
+                domain_col = None
+                for col in ["current_domain", "domain", "original_domain", "url"]:
+                    if col in df.columns:
+                        domain_col = col
+                        break
+                
+                if not domain_col:
+                    st.error(f"❌ No domain column found. Available columns: {list(df.columns)}")
+                else:
+                    st.info(f"Using column: **{domain_col}**")
+                    
+                    # Preview
+                    st.write("**Preview (first 10 rows):**")
+                    st.dataframe(df.head(10))
+                    
+                    # Batch settings
+                    st.divider()
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        batch_name = st.text_input("Batch Name", value="My Batch")
+                    with col2:
+                        concurrency = st.number_input("Concurrency", min_value=1, max_value=10, value=1, help="How many stores to scrape in parallel")
+                    with col3:
+                        limit = st.number_input("Limit", min_value=1, max_value=len(df), value=min(len(df), 100), help="Max stores to process")
+                    
+                    # Start button
+                    if st.button("🚀 Start Batch Scrape", type="primary"):
+                        # Extract domains
+                        domains = df[domain_col].dropna().astype(str).tolist()[:limit]
+                        
+                        # Clean domains
+                        cleaned_domains = []
+                        for d in domains:
+                            d = d.strip().replace("https://", "").replace("http://", "").rstrip("/")
+                            if d:
+                                cleaned_domains.append(d)
+                        
+                        if not cleaned_domains:
+                            st.error("No valid domains found!")
+                        else:
+                            # Create batch in Redis
+                            import uuid
+                            batch_id = str(uuid.uuid4())[:8]
+                            
+                            batch_data = {
+                                "batch_id": batch_id,
+                                "batch_name": batch_name,
+                                "total": len(cleaned_domains),
+                                "completed": 0,
+                                "failed": 0,
+                                "in_progress": 0,
+                                "pending": len(cleaned_domains),
+                                "percent": 0,
+                                "started_at": datetime.now().isoformat(),
+                                "updated_at": datetime.now().isoformat(),
+                                "concurrency": concurrency,
+                                "domains": cleaned_domains,
+                                "stores": {},
+                                "status": "pending"
+                            }
+                            
+                            r.set(f"prism:batch:{batch_id}", json.dumps(batch_data), ex=60*60*24*7)  # 7 day TTL
+                            
+                            # Queue each domain
+                            queued = 0
+                            try:
+                                from prism_worker.tasks import orchestrate_job
+                                
+                                for domain in cleaned_domains:
+                                    url = f"https://{domain}"
+                                    orchestrate_job.send(url, locale="us")
+                                    queued += 1
+                                
+                                # Update status
+                                batch_data["status"] = "running"
+                                batch_data["in_progress"] = queued
+                                batch_data["pending"] = 0
+                                r.set(f"prism:batch:{batch_id}", json.dumps(batch_data), ex=60*60*24*7)
+                                
+                                st.success(f"✅ Queued {queued} stores! Batch ID: `{batch_id}`")
+                                st.info("Switch to the **Monitor Batches** tab to track progress.")
+                                
+                            except ImportError:
+                                st.warning("⚠️ prism_worker not available. Batch saved but jobs not queued.")
+                                st.info(f"Run manually: `python scripts/bootstrap_stores.py --input <your_csv> --name '{batch_name}'`")
+                            except Exception as e:
+                                st.error(f"Failed to queue jobs: {e}")
+                    
+            except Exception as e:
+                st.error(f"Failed to read CSV: {e}")
+    
+    with tab2:
+        st.subheader("Active Batches")
+        
+        # Auto-refresh
+        col1, col2 = st.columns([3, 1])
+        with col2:
+            auto_refresh = st.checkbox("🔄 Auto-refresh (5s)", value=False, key="batch_refresh")
+            if auto_refresh:
+                import time
+                time.sleep(5)
+                st.rerun()
+        
+        # Find all batch keys
+        batch_keys = list(r.scan_iter("prism:batch:*"))
+        
+        if batch_keys:
+            for key in sorted(batch_keys, reverse=True)[:20]:  # Show latest 20
+                try:
+                    batch_data = json.loads(r.get(key) or "{}")
+                    if not batch_data:
+                        continue
+                    
+                    batch_id = batch_data.get("batch_id", key.replace("prism:batch:", ""))
+                    batch_name = batch_data.get("batch_name", "Unknown")
+                    total = batch_data.get("total", 0)
+                    completed = batch_data.get("completed", 0)
+                    failed = batch_data.get("failed", 0)
+                    percent = batch_data.get("percent", 0)
+                    status = batch_data.get("status", "unknown")
+                    
+                    with st.expander(f"**{batch_name}** ({batch_id}) - {percent:.1f}%", expanded=(status == "running")):
+                        # Progress bar
+                        st.progress(percent / 100, text=f"{completed}/{total} stores completed")
+                        
+                        # Stats row
+                        col1, col2, col3, col4 = st.columns(4)
+                        col1.metric("Total", total)
+                        col2.metric("Completed", completed)
+                        col3.metric("Failed", failed)
+                        col4.metric("Status", status.upper())
+                        
+                        # Timing
+                        started = batch_data.get("started_at", "")
+                        updated = batch_data.get("updated_at", "")
+                        st.caption(f"Started: {started[:19] if started else 'N/A'} | Last update: {updated[:19] if updated else 'N/A'}")
+                        
+                        # Delete button
+                        if st.button(f"🗑️ Delete", key=f"del_{batch_id}"):
+                            r.delete(key)
+                            st.rerun()
+                            
+                except Exception as e:
+                    st.warning(f"Could not parse batch: {e}")
+        else:
+            st.info("No active batches. Upload a CSV to start one!")
+
 
 # Semantic Search Page
 elif page == "🔍 Semantic Search":
