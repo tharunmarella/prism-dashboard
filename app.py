@@ -133,7 +133,7 @@ def get_redis_client():
 
 
 def get_queue_stats():
-    """Get stats for all Dramatiq queues via prism-api."""
+    """Get stats for all queues via prism-api."""
     import requests
     
     api_url = os.getenv("PRISM_API_URL", "https://prism-api-production.up.railway.app")
@@ -155,99 +155,121 @@ def get_queue_stats():
 
 
 def get_dlq_jobs():
-    """Get all jobs from Dramatiq Dead Letter Queues (.XQ)."""
-    r = get_redis_client()
-    if not r:
-        logger.debug("No Redis client available for DLQ jobs")
-        return []
+    """Get all jobs from the native RabbitMQ Dead Letter Queue."""
+    import requests
+    from urllib.parse import urlparse
     
-    queues = ["orchestrate", "platform", "discover", "extract", "index", "price"]
-    all_jobs = []
+    rabbitmq_url = os.getenv("RABBITMQ_URL", "amqp://prism:prism_dev_password@localhost:5672/")
+    parsed = urlparse(rabbitmq_url)
     
-    for queue in queues:
-        dlq_key = f"dramatiq:{queue}.XQ"
-        msgs_key = f"dramatiq:{queue}.XQ.msgs"
+    # RabbitMQ Management API
+    user = parsed.username or "prism"
+    password = parsed.password or "prism_dev_password"
+    host = parsed.hostname or "localhost"
+    vhost = parsed.path.lstrip('/') or "%2f"
+    
+    api_url = f"http://{host}:15672/api/queues/{vhost}/prism.dead_letter/get"
         
         try:
-            # XQ is a sorted set with message IDs and timestamps
-            message_ids = r.zrange(dlq_key, 0, 100, withscores=True)  # Limit to 100
-            
-            for msg_id, timestamp in message_ids:
+        # Note: We use ackmode: ack_requeue_true to "peek" at the messages
+        resp = requests.post(
+            api_url,
+            auth=(user, password),
+            json={"count": 50, "ackmode": "ack_requeue_true", "encoding": "auto", "truncate": 50000},
+            timeout=5
+        )
+        if resp.status_code == 200:
+            messages = resp.json()
+            jobs = []
+            for msg in messages:
                 try:
-                    # Message body is in the .XQ.msgs hash
-                    msg_data = r.hget(msgs_key, msg_id)
-                    if msg_data:
-                        job = json.loads(msg_data)
-                        job['queue'] = queue
-                        job['failed_at'] = datetime.fromtimestamp(timestamp / 1000)  # Dramatiq uses milliseconds
-                        all_jobs.append(job)
+                    payload = json.loads(msg["payload"])
+                    # Extract info from payload
+                    job = {
+                        "id": payload.get("message_id"),
+                        "actor_name": payload.get("actor_name"),
+                        "args": payload.get("args"),
+                        "kwargs": payload.get("kwargs"),
+                        "retries": payload.get("options", {}).get("retries", 0),
+                        "failed_at": datetime.now(), # Management API doesn't give precise failure time easily
+                        "error": payload.get("options", {}).get("traceback", "No traceback available")
+                    }
+                    jobs.append(job)
                 except Exception as e:
-                    logger.warning(f"Failed to parse DLQ message {msg_id} from {queue}: {e}")
-                    all_jobs.append({
-                        'queue': queue,
-                        'message_id': msg_id,
-                        'failed_at': datetime.fromtimestamp(timestamp / 1000),
-                        'error': f'Could not parse message: {e}'
-                    })
+                    logger.debug(f"Failed to parse RabbitMQ message: {e}")
+                    continue
+            return jobs
         except Exception as e:
-            logger.warning(f"Failed to fetch DLQ for queue {queue}: {e}")
+        logger.warning(f"Failed to fetch DLQ from RabbitMQ Management API: {e}")
     
-    return sorted(all_jobs, key=lambda x: x.get('failed_at', datetime.min), reverse=True)
+    return []
+
+
+def clear_dlq() -> int:
+    """Purge the RabbitMQ Dead Letter Queue."""
+    import requests
+    from urllib.parse import urlparse
+    
+    rabbitmq_url = os.getenv("RABBITMQ_URL", "amqp://prism:prism_dev_password@localhost:5672/")
+    parsed = urlparse(rabbitmq_url)
+    
+    user = parsed.username or "prism"
+    password = parsed.password or "prism_dev_password"
+    host = parsed.hostname or "localhost"
+    vhost = parsed.path.lstrip('/') or "%2f"
+    
+    api_url = f"http://{host}:15672/api/queues/{vhost}/prism.dead_letter/contents"
+    
+    try:
+        resp = requests.delete(
+            api_url,
+            auth=(user, password),
+            timeout=5
+        )
+        if resp.status_code == 204:
+            return 1 # Success
+    except Exception as e:
+        logger.error(f"Failed to clear RabbitMQ DLQ: {e}")
+    
+    return 0
 
 
 def clear_queue(queue_name: str) -> int:
-    """Clear a specific queue."""
-    r = get_redis_client()
-    if not r:
-        return 0
+    """Purge a specific RabbitMQ queue."""
+    import requests
+    from urllib.parse import urlparse
     
-    # Dramatiq uses `dramatiq:{queue}` as the main queue (list)
-    queue_key = f"dramatiq:{queue_name}"
-    msgs_key = f"dramatiq:{queue_name}.msgs"
+    rabbitmq_url = os.getenv("RABBITMQ_URL", "amqp://prism:prism_dev_password@localhost:5672/")
+    parsed = urlparse(rabbitmq_url)
     
-    count = r.llen(queue_key) if r.type(queue_key) == 'list' else 0
+    user = parsed.username or "prism"
+    password = parsed.password or "prism_dev_password"
+    host = parsed.hostname or "localhost"
+    vhost = parsed.path.lstrip('/') or "%2f"
     
-    # Clear both the queue and message metadata
-    r.delete(queue_key)
-    r.delete(msgs_key)
+    api_url = f"http://{host}:15672/api/queues/{vhost}/{queue_name}/contents"
     
-    return count
+    try:
+        resp = requests.delete(
+            api_url,
+            auth=(user, password),
+            timeout=5
+        )
+        if resp.status_code == 204:
+            return 1
+    except Exception as e:
+        logger.error(f"Failed to clear RabbitMQ queue {queue_name}: {e}")
+    
+    return 0
 
 
 def clear_all_queues() -> dict:
-    """Clear all queues."""
+    """Purge all RabbitMQ queues."""
     queues = ["orchestrate", "platform", "discover", "extract", "index", "price"]
     results = {}
     for queue in queues:
         results[queue] = clear_queue(queue)
     return results
-
-
-def clear_dlq() -> int:
-    """Clear all Dramatiq Dead Letter Queues (.XQ)."""
-    r = get_redis_client()
-    if not r:
-        return 0
-    
-    queues = ["orchestrate", "platform", "discover", "extract", "index", "price"]
-    total_cleared = 0
-    
-    for queue in queues:
-        dlq_key = f"dramatiq:{queue}.XQ"
-        msgs_key = f"dramatiq:{queue}.XQ.msgs"
-        
-        if r.exists(dlq_key):
-            count = r.zcard(dlq_key)
-            r.delete(dlq_key)
-            r.delete(msgs_key)
-            total_cleared += count
-    
-    # Also clear legacy prism:dlq if it exists
-    if r.exists("prism:dlq"):
-        total_cleared += r.zcard("prism:dlq")
-        r.delete("prism:dlq")
-    
-    return total_cleared
 
 
 def get_active_jobs():
