@@ -169,8 +169,8 @@ def get_dlq_jobs():
     vhost = parsed.path.lstrip('/') or "%2f"
     
     api_url = f"http://{host}:15672/api/queues/{vhost}/prism.dead_letter/get"
-        
-        try:
+    
+    try:
         # Note: We use ackmode: ack_requeue_true to "peek" at the messages
         resp = requests.post(
             api_url,
@@ -200,7 +200,7 @@ def get_dlq_jobs():
                     logger.debug(f"Failed to parse RabbitMQ message: {e}")
                     continue
             return jobs
-        except Exception as e:
+    except Exception as e:
         logger.warning(f"Failed to fetch DLQ from RabbitMQ Management API: {e}")
     
     return []
