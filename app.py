@@ -169,8 +169,8 @@ def get_dlq_jobs():
     vhost = parsed.path.lstrip('/') or "%2f"
     
     api_url = f"http://{host}:15672/api/queues/{vhost}/prism.dead_letter/get"
-    
-    try:
+        
+        try:
         # Note: We use ackmode: ack_requeue_true to "peek" at the messages
         resp = requests.post(
             api_url,
@@ -200,7 +200,7 @@ def get_dlq_jobs():
                     logger.debug(f"Failed to parse RabbitMQ message: {e}")
                     continue
             return jobs
-    except Exception as e:
+        except Exception as e:
         logger.warning(f"Failed to fetch DLQ from RabbitMQ Management API: {e}")
     
     return []
@@ -586,7 +586,7 @@ elif page == "📤 Batch Scrape":
                         
                         import requests
                         
-                        try:
+                            try:
                             with st.spinner("🚀 Queuing batch..."):
                                 resp = requests.post(
                                     f"{api_url}/api/v1/jobs/batch",
@@ -601,19 +601,19 @@ elif page == "📤 Batch Scrape":
                                     
                                     if queued > 0:
                                         st.success(f"✅ Queued {queued}/{len(batch_items)} stores! Batch ID: `{batch_id}`")
-                                        
+                        
                                         # Update batch status in Redis for tracking
-                                        batch_data["status"] = "running"
-                                        batch_data["in_progress"] = queued
+                        batch_data["status"] = "running"
+                        batch_data["in_progress"] = queued
                                         batch_data["pending"] = len(batch_items) - queued
-                                        r.set(f"prism:batch:{batch_id}", json.dumps(batch_data), ex=60*60*24*7)
-                                        
-                                        st.info("Switch to the **Monitor Batches** tab to track progress.")
-                                    
-                                    if errors:
-                                        with st.expander(f"⚠️ {len(errors)} errors"):
-                                            for err in errors[:20]:
-                                                st.text(err)
+                        r.set(f"prism:batch:{batch_id}", json.dumps(batch_data), ex=60*60*24*7)
+                        
+                            st.info("Switch to the **Monitor Batches** tab to track progress.")
+                        
+                        if errors:
+                            with st.expander(f"⚠️ {len(errors)} errors"):
+                                for err in errors[:20]:
+                                    st.text(err)
                                 else:
                                     st.error(f"❌ API Error: {resp.status_code}")
                                     st.code(resp.text)
@@ -1337,8 +1337,8 @@ elif page == "💰 Price History":
     global_avg = avg_res['avg_price'].iloc[0] if not avg_res.empty else None
     if global_avg:
         col2.metric("Avg Price (Global)", f"${float(global_avg):.2f}")
-    else:
-        col2.metric("Avg Price", "N/A")
+        else:
+            col2.metric("Avg Price", "N/A")
             
     # Discount count in current view
     if not prices.empty:
