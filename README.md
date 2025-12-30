@@ -34,6 +34,9 @@ export PRISM_API_URL=http://localhost:8000
 
 # Run dashboard
 streamlit run app.py
+
+# Or use Docker Compose
+docker-compose up
 ```
 
 ### Docker
