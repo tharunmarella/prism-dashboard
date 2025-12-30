@@ -581,46 +581,46 @@ elif page == "📤 Batch Scrape":
                             
                             r.set(f"prism:batch:{batch_id}", json.dumps(batch_data), ex=60*60*24*7)  # 7 day TTL
                             
-                        # Queue each domain via prism-api batch endpoint
-                        api_url = os.getenv("PRISM_API_URL", "https://prism-api-production.up.railway.app")
-                        
-                        import requests
-                        
+                            # Queue each domain via prism-api batch endpoint
+                            api_url = os.getenv("PRISM_API_URL", "https://prism-api-production.up.railway.app")
+                            
+                            import requests
+                            
                             try:
-                            with st.spinner("🚀 Queuing batch..."):
-                                resp = requests.post(
-                                    f"{api_url}/api/v1/jobs/batch",
-                                    json={"items": batch_items},
-                                    timeout=30
-                                )
-                                
-                                if resp.status_code in (200, 201):
-                                    data = resp.json()
-                                    queued = data.get("jobs_created", 0)
-                                    errors = data.get("errors", [])
+                                with st.spinner("🚀 Queuing batch..."):
+                                    resp = requests.post(
+                                        f"{api_url}/api/v1/jobs/batch",
+                                        json={"items": batch_items},
+                                        timeout=30
+                                    )
                                     
-                                    if queued > 0:
-                                        st.success(f"✅ Queued {queued}/{len(batch_items)} stores! Batch ID: `{batch_id}`")
-                        
-                                        # Update batch status in Redis for tracking
-                        batch_data["status"] = "running"
-                        batch_data["in_progress"] = queued
-                                        batch_data["pending"] = len(batch_items) - queued
-                        r.set(f"prism:batch:{batch_id}", json.dumps(batch_data), ex=60*60*24*7)
-                        
-                            st.info("Switch to the **Monitor Batches** tab to track progress.")
-                        
-                        if errors:
-                            with st.expander(f"⚠️ {len(errors)} errors"):
-                                for err in errors[:20]:
-                                    st.text(err)
-                                else:
-                                    st.error(f"❌ API Error: {resp.status_code}")
-                                    st.code(resp.text)
-                                    
-                        except Exception as e:
-                            st.error(f"❌ Failed to contact API: {e}")
-                    
+                                    if resp.status_code in (200, 201):
+                                        data = resp.json()
+                                        queued = data.get("jobs_created", 0)
+                                        errors = data.get("errors", [])
+                                        
+                                        if queued > 0:
+                                            st.success(f"✅ Queued {queued}/{len(batch_items)} stores! Batch ID: `{batch_id}`")
+                            
+                                            # Update batch status in Redis for tracking
+                                            batch_data["status"] = "running"
+                                            batch_data["in_progress"] = queued
+                                            batch_data["pending"] = len(batch_items) - queued
+                                            r.set(f"prism:batch:{batch_id}", json.dumps(batch_data), ex=60*60*24*7)
+                                            
+                                            st.info("Switch to the **Monitor Batches** tab to track progress.")
+                                        
+                                        if errors:
+                                            with st.expander(f"⚠️ {len(errors)} errors"):
+                                                for err in errors[:20]:
+                                                    st.text(err)
+                                    else:
+                                        st.error(f"❌ API Error: {resp.status_code}")
+                                        st.code(resp.text)
+                                        
+                            except Exception as e:
+                                st.error(f"❌ Failed to contact API: {e}")
+
             except Exception as e:
                 st.error(f"Failed to read CSV: {e}")
     
