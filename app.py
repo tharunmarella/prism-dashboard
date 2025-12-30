@@ -1337,8 +1337,8 @@ elif page == "💰 Price History":
     global_avg = avg_res['avg_price'].iloc[0] if not avg_res.empty else None
     if global_avg:
         col2.metric("Avg Price (Global)", f"${float(global_avg):.2f}")
-        else:
-            col2.metric("Avg Price", "N/A")
+    else:
+        col2.metric("Avg Price", "N/A")
             
     # Discount count in current view
     if not prices.empty:
